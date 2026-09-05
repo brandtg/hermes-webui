@@ -3234,6 +3234,12 @@ window._mirrorSpeechSettingsFromServer=_mirrorSpeechSettingsFromServer;
     window._showPreviousMessagingSessions=!!s.show_previous_messaging_sessions;
     window._soundEnabled=!!s.sound_enabled;
     window._notificationsEnabled=!!s.notifications_enabled;
+    // Register this device for server-side web push once settings confirm the
+    // user has notifications enabled + granted permission. Safe no-op if the
+    // helper (messages.js) isn't loaded yet — the send/test paths re-trigger it.
+    if(window._notificationsEnabled && typeof _ensureWebPushSubscription==='function'){
+      try{ _ensureWebPushSubscription(); }catch(_e){}
+    }
     window._whatsNewSummaryEnabled=!!s.whats_new_summary_enabled;
     window._showThinking=s.show_thinking!==false;
     window._simplifiedToolCalling=true;
