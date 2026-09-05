@@ -13111,6 +13111,13 @@ def handle_get(handler, parsed) -> bool:
     if parsed.path.startswith("/api/") and not _guard_request_session_visibility(handler, parsed, method="GET"):
         return True
 
+    # ── Web Push (VAPID) ──
+    if parsed.path == "/api/push/vapid-public-key":
+        from api import webpush
+        if not webpush.available():
+            return bad(handler, "web push disabled", status=501)
+        return j(handler, {"publicKey": webpush.get_vapid_public_key()})
+
     # ── Insights / knowledge status ──
     if parsed.path == "/api/insights":
         return _handle_insights(handler, parsed)
@@ -14993,6 +15000,28 @@ def handle_post(handler, parsed) -> bool:
         if diag:
             diag.finish()
         return True
+
+    # ── Web Push ──
+    if parsed.path == "/api/push/subscriptions":
+        from api import webpush
+        if not webpush.available():
+            return bad(handler, "web push disabled", status=501)
+        count = webpush.add_subscription(body if isinstance(body, dict) else {})
+        return j(handler, {"ok": True, "subscriptions": count})
+
+    if parsed.path == "/api/push/test":
+        from api import webpush
+        if not webpush.available():
+            return bad(handler, "web push disabled", status=501)
+        sent = webpush.push_notify(
+            "Web Push test",
+            "This is a test push from your Hermes WebUI.",
+            "/",
+        )
+        return j(
+            handler,
+            {"ok": True, "sent": sent, "subscriptions": webpush.subscription_count()},
+        )
 
     if parsed.path == "/api/escape/authorize":
         return _handle_escape_authorize(handler, parsed, body)
@@ -17658,6 +17687,11 @@ def handle_delete(handler, parsed) -> bool:
     body = read_body(handler)
     if not _guard_request_session_visibility(handler, parsed, body=body, method="DELETE"):
         return True
+    if parsed.path == "/api/push/subscriptions":
+        from api import webpush
+        endpoint = parse_qs(parsed.query).get("endpoint", [""])[0]
+        count = webpush.remove_subscription(endpoint)
+        return j(handler, {"ok": True, "subscriptions": count})
     if parsed.path.startswith("/api/mcp/servers/"):
         name = parsed.path[len("/api/mcp/servers/"):]
         return _handle_mcp_server_delete(handler, name)

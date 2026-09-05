@@ -12283,6 +12283,15 @@ def _run_agent_streaming(
                 meter_stats.setdefault('tps_available', False)
                 meter_stats.setdefault('estimated', False)
                 put('metering', meter_stats)
+                # Server-side Web Push: fire 'Response complete' to registered
+                # devices as soon as the turn is persisted, even if every tab is
+                # closed/backgrounded. Runs on a daemon thread via api.webpush;
+                # failures are swallowed so this can never affect the stream.
+                try:
+                    from api import webpush as _wpush
+                    _wpush.notify_completion(session_id, s, _done_payload)
+                except Exception:
+                    logger.debug("webpush completion hook skipped", exc_info=True)
             try:
                 _log_stream_writeback_timings(
                     getattr(s, 'session_id', session_id),

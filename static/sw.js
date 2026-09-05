@@ -174,6 +174,31 @@ self.addEventListener('fetch', (event) => {
 });
 
 
+self.addEventListener('push', (event) => {
+  // Server-side web push (VAPID). Payload is JSON: {title, body, url}.
+  let payload = {};
+  try { payload = event.data ? event.data.json() : {}; } catch (_e) { payload = {}; }
+  const title = payload.title || 'Hermes';
+  const body = payload.body || '';
+  const url = payload.url || './';
+  // Keep a per-session tag so the browser coalesces duplicate pushes for one session.
+  let tag = 'hermes-webui';
+  try {
+    const m = String(url).match(/\/session\/([^/?#]+)/);
+    if (m && m[1]) tag = 'hermes-' + m[1];
+  } catch (_e) { /* noop */ }
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body,
+      icon: 'static/favicon-192.png',
+      badge: 'static/favicon-32.png',
+      tag,
+      data: { url },
+    })
+  );
+});
+
+
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
   const rawUrl = (event.notification.data && event.notification.data.url) || './';

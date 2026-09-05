@@ -9179,6 +9179,7 @@ function requestNotificationPermission(){
   if(Notification.permission==='granted'){
     if(typeof updateNotificationPermissionStatus==='function') updateNotificationPermissionStatus();
     if(typeof showToast==='function') showToast(t('notifications_enabled_toast'),3000);
+    _ensureWebPushSubscription();
     return Promise.resolve('granted');
   }
   if(Notification.permission==='denied'){
@@ -9189,8 +9190,80 @@ function requestNotificationPermission(){
   return Notification.requestPermission().then(p=>{
     if(typeof showToast==='function') showToast(p==='granted'?t('notifications_enabled_toast'):t('notifications_denied'),3000,p==='granted'?undefined:'error');
     if(typeof updateNotificationPermissionStatus==='function') updateNotificationPermissionStatus();
+    _ensureWebPushSubscription();
     return p;
   });
+}
+// ── Server-side Web Push (VAPID) ───────────────────────────────────────────
+// Registers a PushManager subscription for this device and upserts it to the
+// server so completion/approval pushes arrive even when the page is dead or
+// backgrounded (the server pushes via api/webpush.py). Purely best-effort and
+// idempotent: it must never throw into the notification path.
+function _urlBase64ToUint8Array(base64String){
+  const padding='='.repeat((4-(base64String.length%4))%4);
+  const base64=(base64String+padding).replace(/-/g,'+').replace(/_/g,'/');
+  const rawData=window.atob(base64);
+  const out=new Uint8Array(rawData.length);
+  for(let i=0;i<rawData.length;++i) out[i]=rawData.charCodeAt(i);
+  return out;
+}
+let _webpushEnsurePromise=null;
+function _ensureWebPushSubscription(){
+  if(!('serviceWorker' in navigator)||!('PushManager' in window)) return Promise.resolve(null);
+  if(!window._notificationsEnabled) return Promise.resolve(null);
+  if(!('Notification' in window)||Notification.permission!=='granted') return Promise.resolve(null);
+  if(window._webpushSubscribed) return Promise.resolve(null);
+  if(_webpushEnsurePromise) return _webpushEnsurePromise;
+  _webpushEnsurePromise=(async()=>{
+    try{
+      const reg=await navigator.serviceWorker.ready;
+      let sub=null;
+      try{ sub=await reg.pushManager.getSubscription(); }catch(_e){ sub=null; }
+      let declined=false;
+      if(!sub){
+        const pkRes=await fetch(_apiUrl('api/push/vapid-public-key'),{cache:'no-store'});
+        if(!pkRes.ok) return null; // leave unset so a later attempt can retry
+        const pk=await pkRes.json();
+        try{
+          sub=await reg.pushManager.subscribe({
+            userVisibleOnly:true,
+            applicationServerKey:_urlBase64ToUint8Array(pk.publicKey)
+          });
+        }catch(_e){
+          declined=true; // PermissionNotAllowed / AbortError → user declined
+        }
+      }
+      if(!sub){ if(declined) window._webpushSubscribed=true; return null; }
+      try{
+        await fetch(_apiUrl('api/push/subscriptions'),{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify(sub.toJSON())
+        });
+        window._webpushSubscribed=true;
+      }catch(_e){ /* server store failed; don't mark subscribed so we retry later */ }
+      return sub;
+    }catch(_e){
+      return null;
+    }
+  })();
+  return _webpushEnsurePromise;
+}
+// End-to-end test: fire the local in-page notification AND a real server-side
+// web push to every registered device. Toasts the outcome.
+async function _testWebPush(){
+  if(typeof sendBrowserNotification==='function') sendBrowserNotification('Hermes test','Notifications are ready.',{force:true});
+  let pushed=false, subs=0;
+  try{
+    await _ensureWebPushSubscription();
+    const r=await fetch(_apiUrl('api/push/test'),{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    if(r.ok){ const d=await r.json(); pushed=!!(d&&d.sent); subs=(d&&d.subscriptions)||0; }
+  }catch(_e){}
+  if(typeof showToast==='function'){
+    if(pushed) showToast('Web push sent to '+(subs||1)+' registered device'+(subs===1?'':'s'),3000);
+    else if(subs>0) showToast('Web push queued (delivery may take a moment)',2500);
+    else showToast('No device subscribed yet — retry after the page finishes loading',3000,'error');
+  }
 }
 function sendBrowserNotification(title,body,options={}){
   const force=!!(options&&options.force);
@@ -9205,6 +9278,7 @@ function sendBrowserNotification(title,body,options={}){
   if(!force&&!forceHidden&&!_isBackgroundedForBrowserNotification()) return;
   if(!('Notification' in window)) return;
   if(Notification.permission==='granted'){
+    _ensureWebPushSubscription();
     _showPwaNotification(title,body,options).catch(()=>{try{new Notification(title||assistantDisplayName(),_notificationOptions(body,options));}catch(_err){}});
   }else if(Notification.permission==='denied'){
     // Explicit "Send test" (force) deserves feedback instead of a silent no-op.
