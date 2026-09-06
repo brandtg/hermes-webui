@@ -2258,6 +2258,16 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   let _smdWrittenLen=0;    // how many chars of displayText have been fed to smd parser
   let _smdWrittenText='';  // exact displayText snapshot used for prefix-alignment checks
   let _streamingKatexTimer=null; // throttles live KaTeX scans while smd writes deltas
+  // Rewind-coalesce state: while a streamed tool/thinking tag is half-formed,
+  // displayText oscillates back to the same prefix across consecutive 15fps
+  // renders. Each oscillation used to wipe assistantBody (innerHTML='') and
+  // replay the ENTIRE message — a full-message blink on every tool boundary in
+  // tool-heavy turns (worse in a narrow pane, which re-layouts every wrap).
+  // _lastRewindTarget/_lastRewindAt collapse a same-target oscillation into a
+  // single rebuild; a genuinely NEW rewind point still pays for a rebuild.
+  let _lastRewindTarget='';
+  let _lastRewindAt=0;
+  const _REWIND_COALESCE_MS=400;
   // On reconnect, the assistantBody already has partial smd-rendered content.
   // We clear it on first new token and restart the parser from the reconnect point.
   let _smdReconnect=reconnecting;
@@ -4478,6 +4488,22 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     // already written (e.g. due to stream sanitization/tag stripping), incremental slicing
     // can skip characters. Rebuild parser from the full current displayText.
     if(_smdWrittenText && !displayText.startsWith(_smdWrittenText)){
+      // Rewind-coalesce (#flicker): a half-streamed tool/thinking tag makes
+      // displayText snap back to the SAME prefix on consecutive 15fps renders.
+      // The rebuild below wipes assistantBody (innerHTML='') and replays the
+      // full message — a visible full-message blink every frame it repeats.
+      // If we already rebuilt to this exact target in the debounce window, the
+      // DOM already shows at least this prefix; skip until the target moves so
+      // a burst of same-point rewinds costs ONE build, not a blink-per-frame.
+      // Safe: on any divergence from _lastRewindTarget (tag closes / content
+      // grows) the branch below runs the normal full rebuild, and the stream
+      // finalizes into a canonical renderMessages() pass regardless.
+      const _now=performance.now();
+      if(displayText===_lastRewindTarget && (_now-_lastRewindAt)<_REWIND_COALESCE_MS){
+        return;
+      }
+      _lastRewindTarget=displayText;
+      _lastRewindAt=_now;
       // Fade-flash fix: when the visible text REWINDS (tool-call XML stripping
       // makes displayText a strict prefix of what was already written), the
       // rebuild below would clear the body and re-create every word as a new
