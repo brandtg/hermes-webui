@@ -2723,11 +2723,27 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   // once and stays. The ResizeObserver settle already batches its own writes
   // per frame; this coalesces the per-render synchronous call into it.
   let _deferredScrollRaf=null;
+  // scrollIfPinned() -> _settleMessageScrollToBottom(false) re-arms its full
+  // settle machinery (sync write + fresh ResizeObserver + retry rAF + timers)
+  // on EVERY call. Invoked every render (~15x/s) this produces a cascade of
+  // staggered scroll writes applied at different layout moments -> a visible
+  // up/down lurch even when the DOM is static (#scroll-stutter). Throttle the
+  // full settle to _STREAM_SCROLL_SETTLE_MIN_MS so the per-render cascade dies;
+  // in between, the single ResizeObserver armed by each settle batch-follows
+  // growth at one write/frame (that was its design intent). Post-layout rAF
+  // keeps the throttled write off the mutate frame.
+  const _STREAM_SCROLL_SETTLE_MIN_MS=250;
+  let _lastStreamScrollSettleAt=0;
   function _deferScrollIfPinned(){
     if(_deferredScrollRaf) return;
     _deferredScrollRaf=requestAnimationFrame(()=>{
       _deferredScrollRaf=null;
-      if(typeof scrollIfPinned==='function') scrollIfPinned();
+      if(typeof scrollIfPinned!=='function') return;
+      const now=performance.now();
+      if((now-_lastStreamScrollSettleAt)>=_STREAM_SCROLL_SETTLE_MIN_MS){
+        _lastStreamScrollSettleAt=now;
+        scrollIfPinned();
+      }
     });
   }
   let _streamFadeVisibleText='';
