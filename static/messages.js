@@ -2713,6 +2713,23 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
   // the final answer or the response to render twice.
   let _streamFinalized=false;
   let _pendingRafHandle=null;
+  // Streaming scroll-follow is deferred to a post-layout rAF, coalesced to one
+  // write per frame. _doRender appends new DOM then calls scrollIfPinned()
+  // synchronously in the SAME frame — before the new nodes have laid out — so
+  // scrollTop is written against a stale bottom and the browser lurches to
+  // correct it on the next layout. In a narrow pane every word wraps, so this
+  // fired every render and read as a visible up/down jitter. Deferring one
+  // frame lets layout settle; scrollHeight is then current, so the write lands
+  // once and stays. The ResizeObserver settle already batches its own writes
+  // per frame; this coalesces the per-render synchronous call into it.
+  let _deferredScrollRaf=null;
+  function _deferScrollIfPinned(){
+    if(_deferredScrollRaf) return;
+    _deferredScrollRaf=requestAnimationFrame(()=>{
+      _deferredScrollRaf=null;
+      if(typeof scrollIfPinned==='function') scrollIfPinned();
+    });
+  }
   let _streamFadeVisibleText='';
   let _streamFadeLastTickMs=0;
   let _streamFadeWordCarry=0;
@@ -4614,10 +4631,15 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
     _streamFadeSilentPrefixChars=0;
   }
   function _cancelAnimationFramePendingStreamRender(){
-    if(_pendingRafHandle===null) return;
+    if(_pendingRafHandle===null){
+      // No render pending, but a deferred scroll-follow may still be queued.
+      if(_deferredScrollRaf){ cancelAnimationFrame(_deferredScrollRaf); _deferredScrollRaf=null; }
+      return;
+    }
     cancelAnimationFrame(_pendingRafHandle);
     clearTimeout(_pendingRafHandle);
     _pendingRafHandle=null;
+    if(_deferredScrollRaf){ cancelAnimationFrame(_deferredScrollRaf); _deferredScrollRaf=null; }
     _renderPending=false;
   }
   function _shouldUseStreamFade(){
@@ -5692,7 +5714,7 @@ function attachLiveStream(activeSid, streamId, uploaded=[], options={}){
         if(typeof _syncLiveWorklogReasonsForAnchor==='function') _syncLiveWorklogReasonsForAnchor(assistantRow, displayText);
       }
       if(anchorProcessText) _upsertAnchorProcessProse(anchorProcessText);
-      scrollIfPinned();
+      _deferScrollIfPinned();
       _throttledSnapshotLiveTurn();
     };
     const frameIntervalMs=_shouldUseLiveProseFade()?33:66;
